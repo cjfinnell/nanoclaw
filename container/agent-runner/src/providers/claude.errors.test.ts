@@ -148,6 +148,22 @@ it.each([
   expect(await resultEvents()).toEqual([{ type: 'result', text: result, isError: true, error: undefined }]);
 });
 
+it.each([
+  [
+    'a gateway 429',
+    'API Error: Request rejected (429) · litellm.RateLimitError: AnthropicException - rate_limit_error tenant private',
+    'Claude is rate-limited right now. Try again later.',
+  ],
+  [
+    'a gateway 429 whose local fallback overflowed',
+    'API Error: Request rejected (429) · rate_limit_error ... exceed_context_size_error n_ctx 32768',
+    "Claude is rate-limited right now, and the local fallback model couldn't fit this conversation. Try again later.",
+  ],
+])('uses a fixed notice for %s without echoing the body', async (_label, result, notice) => {
+  sdkMessages.push({ type: 'result', subtype: 'success', is_error: true, result, errors: [] });
+  expect(await resultEvents()).toEqual([{ type: 'result', text: null, isError: true, error: notice }]);
+});
+
 it('keeps errors[] as the error when the SDK provides it', async () => {
   sdkMessages.push({ type: 'result', subtype: 'success', is_error: true, result: AUTH_ERROR, errors: [BILLING_ERROR] });
   expect(await resultEvents()).toEqual([{ type: 'result', text: AUTH_ERROR, isError: true, error: BILLING_ERROR }]);

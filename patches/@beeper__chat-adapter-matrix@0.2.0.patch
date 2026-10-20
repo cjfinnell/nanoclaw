@@ -1,0 +1,90 @@
+diff --git a/dist/index.js b/dist/index.js
+index 3360d7352fec0df580a474088205519227cc8be0..2d4ddb20d17d22f6a3640942540fecc4d5dccbe6 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,5 +1,5 @@
+ // src/index.ts
+-import { randomBytes } from "crypto";
++import { randomBytes, createDecipheriv, createHash } from "crypto";
+ import {
+   ConsoleLogger,
+   getEmoji,
+@@ -21,9 +21,9 @@ import sdk, {
+   ThreadFilterType,
+   THREAD_RELATION_TYPE
+ } from "matrix-js-sdk";
+-import { MatrixError } from "matrix-js-sdk/lib/http-api/errors";
+-import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key";
+-import { logger as matrixSDKLogger } from "matrix-js-sdk/lib/logger";
++import { MatrixError } from "matrix-js-sdk/lib/http-api/errors.js";
++import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key.js";
++import { logger as matrixSDKLogger } from "matrix-js-sdk/lib/logger.js";
+ import { marked } from "marked";
+ import {
+   HTMLElement,
+@@ -33,8 +33,8 @@ import {
+ 
+ // src/store/chat-state-matrix-store.ts
+ import { MatrixEvent } from "matrix-js-sdk";
+-import { SyncAccumulator } from "matrix-js-sdk/lib/sync-accumulator";
+-import { MemoryStore } from "matrix-js-sdk/lib/store/memory";
++import { SyncAccumulator } from "matrix-js-sdk/lib/sync-accumulator.js";
++import { MemoryStore } from "matrix-js-sdk/lib/store/memory.js";
+ var STORE_VERSION = 1;
+ var DEFAULT_PERSIST_INTERVAL_MS = 3e4;
+ function normalizeStringRecord(value) {
+@@ -2128,7 +2128,8 @@ ${codeContent}
+     return root.toString();
+   }
+   extractAttachments(content) {
+-    const url = typeof content.url === "string" ? content.url : void 0;
++    const encryptedFile = isRecord2(content.file) && typeof content.file.url === "string" ? content.file : void 0;
++    const url = encryptedFile ? encryptedFile.url : typeof content.url === "string" ? content.url : void 0;
+     if (!url) {
+       return [];
+     }
+@@ -2142,7 +2143,7 @@ ${codeContent}
+       size: typeof info?.size === "number" ? info.size : void 0,
+       width: typeof info?.w === "number" ? info.w : void 0,
+       height: typeof info?.h === "number" ? info.h : void 0,
+-      fetchData: this.createAttachmentFetcher(url)
++      fetchData: this.createAttachmentFetcher(url, encryptedFile)
+     };
+     return [attachment];
+   }
+@@ -2183,7 +2184,24 @@ ${codeContent}
+       }
+     }
+   }
+-  createAttachmentFetcher(url) {
++  decryptAttachment(ciphertext, file) {
++    const key = isRecord2(file.key) && typeof file.key.k === "string" ? Buffer.from(file.key.k, "base64url") : void 0;
++    const iv = typeof file.iv === "string" ? Buffer.from(file.iv, "base64") : void 0;
++    if (!key || key.length !== 32 || !iv || iv.length !== 16) {
++      throw new Error("Matrix encrypted attachment has an invalid key or IV");
++    }
++    const expectedHash = isRecord2(file.hashes) && typeof file.hashes.sha256 === "string" ? file.hashes.sha256.replace(/=+$/, "") : void 0;
++    if (!expectedHash) {
++      throw new Error("Matrix encrypted attachment is missing its SHA-256 hash");
++    }
++    const actualHash = createHash("sha256").update(ciphertext).digest("base64").replace(/=+$/, "");
++    if (actualHash !== expectedHash) {
++      throw new Error("Matrix encrypted attachment failed its SHA-256 check");
++    }
++    const decipher = createDecipheriv("aes-256-ctr", key, iv);
++    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
++  }
++  createAttachmentFetcher(url, encryptedFile) {
+     if (typeof fetch !== "function") {
+       return void 0;
+     }
+@@ -2204,7 +2222,8 @@ ${codeContent}
+           `Failed to fetch Matrix attachment (${response.status} ${response.statusText})`
+         );
+       }
+-      return Buffer.from(await response.arrayBuffer());
++      const data = Buffer.from(await response.arrayBuffer());
++      return encryptedFile ? this.decryptAttachment(data, encryptedFile) : data;
+     };
+   }
+   resolveAttachmentDownloadURL(url, client) {

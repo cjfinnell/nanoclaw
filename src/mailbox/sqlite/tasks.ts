@@ -88,16 +88,20 @@ export interface TaskUpdate {
 // Merges content JSON in-place so callers can update prompt/script without
 // clobbering other fields. Matches by id OR series_id so the live next
 // occurrence of a recurring task is updated, not just the completed row the
-// agent last saw. Due occurrences are already execution candidates and remain
-// immutable; only future pending or paused occurrences are updated. Returns
-// the number of rows touched.
+// agent last saw. Due one-shot runs are already execution candidates and remain
+// immutable; future pending, paused and recurring pending occurrences are
+// updated (a frequent cron's next occurrence is almost always already due but
+// unclaimed). Returns the number of rows touched.
 export function updateTask(db: Database.Database, taskId: string, update: TaskUpdate): number {
   const rows = db
     .prepare(
       `SELECT id, content FROM messages_in
        WHERE (id = ? OR series_id = ?)
          AND kind = 'task'
-         AND (status = 'paused' OR (status = 'pending' AND datetime(process_after) > datetime('now')))`,
+         AND (
+           status = 'paused'
+           OR (status = 'pending' AND (datetime(process_after) > datetime('now') OR recurrence IS NOT NULL))
+         )`,
     )
     .all(taskId, taskId) as Array<{ id: string; content: string }>;
 

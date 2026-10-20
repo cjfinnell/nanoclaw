@@ -1,0 +1,22 @@
+diff --git a/lib/rust-crypto/rust-crypto.js b/lib/rust-crypto/rust-crypto.js
+index f027b36e1201f43dc283ee53c8913156b09bca76..e9465e28717e16b83df81358009706d357b0bf29 100644
+--- a/lib/rust-crypto/rust-crypto.js
++++ b/lib/rust-crypto/rust-crypto.js
+@@ -1365,10 +1365,16 @@ export class RustCrypto extends TypedEventEmitter {
+    */
+   async receiveSyncChanges({
+     events,
+-    oneTimeKeysCounts = new Map(),
++    oneTimeKeysCounts,
+     unusedFallbackKeys,
+     devices = new RustSdkCryptoJs.DeviceLists()
+   }) {
++    // NanoClaw local patch: crypto-wasm 18.9 reads a missing count as "zero keys on the server",
++    // so partial updates (to-device, device lists) must use the MSC4186 variant ("unchanged"),
++    // or every one of them triggers another 50-key upload until the server hits its 500 cap.
++    if (oneTimeKeysCounts === undefined) {
++      return await this.olmMachine.receiveSyncChangesMsc4186(events ? JSON.stringify(events) : "[]", devices, new Map(), unusedFallbackKeys);
++    }
+     return await this.olmMachine.receiveSyncChanges(events ? JSON.stringify(events) : "[]", devices, oneTimeKeysCounts, unusedFallbackKeys);
+   }
+ 

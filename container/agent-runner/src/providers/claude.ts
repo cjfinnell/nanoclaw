@@ -168,6 +168,18 @@ const SDK_NOTICES = new Map([
   ['Prompt is too long', 'This conversation got too long. An admin can send /clear to start a new one.'],
 ]);
 
+// Local patch: a 429 from the model gateway (LiteLLM) gets a fixed notice
+// instead of the generic one. Only fixed strings reach the channel; the
+// upstream body is matched, never echoed.
+const RATE_LIMIT_NOTICE = 'Claude is rate-limited right now. Try again later.';
+const RATE_LIMIT_FALLBACK_TOO_SMALL_NOTICE =
+  "Claude is rate-limited right now, and the local fallback model couldn't fit this conversation. Try again later.";
+
+function rateLimitNotice(result: string): string {
+  if (!/^API Error: (Request rejected \(429\)|429\b)/.test(result)) return '';
+  return result.includes('exceed_context_size') ? RATE_LIMIT_FALLBACK_TOO_SMALL_NOTICE : RATE_LIMIT_NOTICE;
+}
+
 /** The real clock for archive names and rotation stamps; tests hand the history functions a fixed one. */
 const REAL_CLOCK = { now: () => Date.now() };
 
@@ -373,7 +385,7 @@ export class ClaudeProvider implements AgentProvider {
           const candidate = isError && !m.errors?.length ? (m.result?.trim() ?? '') : '';
           // Notice first, hint on its own line: setup's ping shows only the first line.
           const hint = SDK_NOTICES.get(candidate);
-          const resultAsError = hint ? `${candidate}\n${hint}` : '';
+          const resultAsError = hint ? `${candidate}\n${hint}` : rateLimitNotice(candidate);
           yield {
             type: 'result',
             text: resultAsError ? null : (m.result ?? null),

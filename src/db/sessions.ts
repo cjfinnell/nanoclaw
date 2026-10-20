@@ -356,6 +356,23 @@ export async function getAskQuestionRender(id: string): Promise<
   return undefined;
 }
 
+/** Pending approvals on a channel whose prompt message was never recorded. */
+export async function getUnboundPendingApprovals(channelType: string): Promise<PendingApproval[]> {
+  return getDb().all<PendingApproval>(
+    "SELECT * FROM pending_approvals WHERE channel_type = ? AND status = 'pending' AND platform_message_id IS NULL ORDER BY created_at",
+    channelType,
+  );
+}
+
+/** Approval ID whose delivered prompt is this platform message, if any. */
+export async function getPendingApprovalIdByMessage(messageId: string): Promise<string | undefined> {
+  const row = await getDb().get<{ approval_id: string }>(
+    'SELECT approval_id FROM pending_approvals WHERE platform_message_id = ?',
+    messageId,
+  );
+  return row?.approval_id;
+}
+
 /** Bind the delivered platform card after its approval row is durable. */
 export async function bindPendingApprovalMessage(approvalId: string, messageId: string): Promise<void> {
   await getDb().run(

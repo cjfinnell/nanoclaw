@@ -268,6 +268,23 @@ describe('updateTask', () => {
     db.close();
   });
 
+  it('updates a due but unclaimed recurring occurrence', () => {
+    const db = freshDb();
+    insertTaskRow(db, {
+      id: 'task-due-cron',
+      seriesId: 'task-due-cron',
+      processAfter: '2000-01-01T00:00:00.000Z',
+      recurrence: '*/2 * * * *',
+      content: JSON.stringify({ prompt: 'old' }),
+    });
+
+    expect(updateTask(db, 'task-due-cron', { prompt: 'new' })).toBe(1);
+
+    const row = db.prepare("SELECT content FROM messages_in WHERE id = 'task-due-cron'").get() as { content: string };
+    expect(JSON.parse(row.content).prompt).toBe('new');
+    db.close();
+  });
+
   it('returns 0 when no live task matches', () => {
     const db = freshDb();
     insertTaskRow(db, {

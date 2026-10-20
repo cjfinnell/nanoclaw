@@ -19,8 +19,15 @@ import {
   type AssistantContextChangedEvent,
   type AssistantThreadStartedEvent,
   type ConcurrencyStrategy,
+  type Logger as ChatLogger,
   type Message as ChatMessage,
+  type ReactionEvent,
 } from 'chat';
+import {
+  bindPendingApprovalMessage,
+  getPendingApprovalIdByMessage,
+  getUnboundPendingApprovals,
+} from '../db/sessions.js';
 import { log } from '../log.js';
 import { SqliteStateAdapter } from '../state-sqlite.js';
 import { registerWebhookAdapter } from '../webhook-server.js';
@@ -28,6 +35,7 @@ import { normalizeOptions, type NormalizedOption } from './ask-question.js';
 import type { ChannelAdapter, ChannelDefaults, ChannelSetup, InboundMessage } from './adapter.js';
 import { INSTANCE_KEY_RE } from './channel-registry.js';
 import { resolveQuestionRender, dispatchQuestionAction } from './question-render-registry.js';
+import { appendTranscript, type AudioTranscriber } from './transcribe.js';
 
 /** Adapter with optional gateway support (e.g., Discord). */
 interface GatewayAdapter extends Adapter {
@@ -45,6 +53,25 @@ interface ConnectionAwareAdapter extends Adapter {
 }
 
 /** Reply context extracted from a platform's raw message. */
+
+/** Chat SDK logger that forwards warn/error to the host log and drops debug/info. */
+function chatSdkLogger(prefix: string): ChatLogger {
+  const fields = (args: unknown[]) => {
+    const first = args[0];
+    if (args.length === 1 && first && typeof first === 'object' && !(first instanceof Error)) {
+      return { chatSdk: prefix, ...(first as Record<string, unknown>) };
+    }
+    return { chatSdk: prefix, args };
+  };
+  return {
+    child: (sub: string) => chatSdkLogger(`${prefix}:${sub}`),
+    debug: () => {},
+    info: () => {},
+    warn: (message, ...args) => log.warn(`Chat SDK: ${message}`, fields(args)),
+    error: (message, ...args) => log.error(`Chat SDK: ${message}`, fields(args)),
+  };
+}
+
 export interface ReplyContext {
   text: string;
   sender: string;
@@ -372,6 +399,59 @@ export interface ChatSdkBridgeConfig {
    * and reactions still target the head of the reply.
    */
   maxTextLength?: number;
+  /**
+   * Post approve/reject questions as one plain-text line and resolve them by
+   * reaction: 👍 approves, 👎 rejects. For clients that do not render card
+   * buttons (Matrix via Beeper). Other questions still post as cards.
+   */
+  reactionApprovals?: boolean;
+  /**
+   * Transcribe audio attachments on the host and append the text to the
+   * message body, so agents without speech tooling can read voice notes.
+   * A failure is logged and the message is delivered without a transcript.
+   */
+  transcribeAudio?: AudioTranscriber;
+}
+
+/** An ask_question that maps to a plain approve/reject decision. */
+function isApproveRejectQuestion(options: NormalizedOption[]): boolean {
+  const values = options.map((o) => o.value);
+  return values.includes('approve') && values.includes('reject');
+}
+
+/** One-line approval prompt: the request, then the reactions that decide it. */
+function reactionApprovalText(question: string): string {
+  const request = question
+    .replace(/:\s*\n\s*/g, ' ')
+    .replace(/\s*\n\s*/g, ' ')
+    .trim();
+  return `${request}\n\n👍 approve · 👎 reject`;
+}
+
+/**
+ * Re-send approve/reject approvals that have no delivered prompt on record
+ * (cards posted before reaction approvals, or lost to a crash) as reaction
+ * prompts. Call once the platform is connected.
+ */
+export async function repostUnboundReactionApprovals(adapter: Adapter, channelType: string): Promise<void> {
+  for (const row of await getUnboundPendingApprovals(channelType)) {
+    const options = JSON.parse(row.options_json) as NormalizedOption[];
+    if (!row.platform_id || !row.question || !isApproveRejectQuestion(options)) continue;
+    try {
+      const result = await adapter.postMessage(row.platform_id, { markdown: reactionApprovalText(row.question) });
+      if (result?.id) await bindPendingApprovalMessage(row.approval_id, result.id);
+      log.info('Re-posted approval as reaction prompt', { approvalId: row.approval_id });
+    } catch (err) {
+      log.warn('Failed to re-post approval as reaction prompt', { approvalId: row.approval_id, err });
+    }
+  }
+}
+
+function reactionDecision(event: ReactionEvent): 'approve' | 'reject' | null {
+  if (!event.added) return null;
+  if (event.emoji?.name === 'thumbs_up' || event.rawEmoji?.startsWith('👍')) return 'approve';
+  if (event.emoji?.name === 'thumbs_down' || event.rawEmoji?.startsWith('👎')) return 'reject';
+  return null;
 }
 
 /**
@@ -480,6 +560,8 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
   let chat: Chat;
   let state: SqliteStateAdapter;
   let setupConfig: ChannelSetup;
+  /** Reaction prompt message ID → question ID, for questions not backed by pending_approvals. */
+  const reactionPrompts = new Map<string, string>();
   let gatewayAbort: AbortController | null = null;
 
   async function messageToInbound(
@@ -507,6 +589,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           try {
             const buffer = await att.fetchData();
             entry.data = buffer.toString('base64');
+            if (att.type === 'audio' && config.transcribeAudio) {
+              try {
+                const transcript = await config.transcribeAudio(buffer, { name: att.name, mimeType: att.mimeType });
+                if (transcript) entry.transcript = transcript;
+              } catch (err) {
+                log.warn('Failed to transcribe audio attachment', { name: att.name, err });
+              }
+            }
           } catch (err) {
             log.warn('Failed to download attachment', { type: att.type, err });
           }
@@ -514,6 +604,9 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         enriched.push(entry);
       }
       serialized.attachments = enriched;
+      for (const entry of enriched) {
+        if (entry.transcript) appendTranscript(serialized, entry.name, entry.transcript);
+      }
     }
 
     // Recover platform content the Chat SDK omitted, while raw is still here.
@@ -580,7 +673,10 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         userName: adapter.userName || 'NanoClaw',
         concurrency: config.concurrency ?? 'concurrent',
         state,
-        logger: 'silent',
+        // Not 'silent': the SDK catches handler errors and reports them only
+        // through this logger, so a silent one drops inbound messages with no
+        // trace. Warnings and errors go to the host log; debug/info stay quiet.
+        logger: chatSdkLogger(adapter.name),
       });
 
       // Four SDK dispatch paths — bridge just forwards. All per-wiring
@@ -681,6 +777,53 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         });
       });
 
+      /**
+       * Apply a decision on a question card or reaction prompt: update the
+       * message to show the outcome, then hand the decision to the host.
+       */
+      const resolveQuestion = async (
+        questionId: string,
+        selectedOption: string,
+        user: { userId?: string; userName?: string; fullName?: string } | undefined,
+        threadId: string,
+        messageId: string,
+        render: Awaited<ReturnType<typeof resolveQuestionRender>>,
+        asReactionPrompt: boolean,
+      ): Promise<void> => {
+        const userId = user?.userId || '';
+        const address = {
+          instance: instanceKey,
+          messageId,
+          platformId: adapter.channelIdFromThreadId(threadId),
+        };
+        if (render?.deferResolution) {
+          setupConfig.onAction(questionId, selectedOption, userId, address);
+          return;
+        }
+        const title = render?.title ?? '❓ Question';
+        const matched = render?.options.find((o) => o.value === selectedOption);
+        const selectedLabel = matched?.selectedLabel ?? selectedOption ?? '(clicked)';
+
+        // Update the card to show the selected answer, who acted, and remove buttons
+        const actorName = user?.userName || user?.fullName || '';
+        const resolution = actorName ? `${selectedLabel} by ${actorName}` : selectedLabel;
+        try {
+          await adapter.editMessage(
+            threadId,
+            messageId,
+            asReactionPrompt && render?.question
+              ? { markdown: `${reactionApprovalText(render.question).split('\n')[0]}\n\n${resolution}` }
+              : render?.question
+                ? terminalApprovalMessage({ title, question: render.question, resolution })
+                : { markdown: `${title}\n\n${resolution}` },
+          );
+        } catch (err) {
+          log.warn('Failed to update card after action', { err });
+        }
+
+        setupConfig.onAction(questionId, selectedOption, userId, address);
+      };
+
       // Handle button clicks (ask_user_question)
       chat.onAction(async (event) => {
         if (await dispatchQuestionAction(event, adapter, instanceKey)) return;
@@ -689,7 +832,6 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         if (parts.length < 3) return;
         const questionId = parts[1];
         const tail = parts.slice(2).join(':');
-        const userId = event.user?.userId || '';
 
         // Resolve render metadata BEFORE dispatching onAction (which deletes the row).
         const render = await resolveQuestionRender(questionId);
@@ -697,38 +839,47 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         // short to fit Telegram's 64-byte callback_data cap). Old format:
         // the full value is embedded in actionId/value directly.
         const selectedOption = resolveSelectedOption(render, event.value, tail);
-        if (render?.deferResolution) {
-          setupConfig.onAction(questionId, selectedOption, userId, {
-            instance: instanceKey,
-            messageId: event.messageId,
-            platformId: adapter.channelIdFromThreadId(event.threadId),
-          });
-          return;
-        }
-        const title = render?.title ?? '❓ Question';
-        const matched = render?.options.find((o) => o.value === selectedOption);
-        const selectedLabel = matched?.selectedLabel ?? selectedOption ?? '(clicked)';
+        await resolveQuestion(questionId, selectedOption, event.user, event.threadId, event.messageId, render, false);
+      });
 
-        // Update the card to show the selected answer, who acted, and remove buttons
-        const actorName = event.user?.userName || event.user?.fullName || '';
-        const resolution = actorName ? `${selectedLabel} by ${actorName}` : selectedLabel;
-        try {
-          const tid = event.threadId;
-          await adapter.editMessage(
-            tid,
-            event.messageId,
-            render?.question
-              ? terminalApprovalMessage({ title, question: render.question, resolution })
-              : { markdown: `${title}\n\n${resolution}` },
-          );
-        } catch (err) {
-          log.warn('Failed to update card after action', { err });
+      // Reaction approvals: 👍 / 👎 on a reaction prompt decides it. The host
+      // still checks that the reacting user may decide the approval.
+      // Every other added reaction from a human is forwarded to the agent as
+      // an inbound message naming the emoji and the message it targets.
+      chat.onReaction(async (event) => {
+        if (config.reactionApprovals) {
+          const decision = reactionDecision(event);
+          if (decision) {
+            const questionId =
+              reactionPrompts.get(event.messageId) ?? (await getPendingApprovalIdByMessage(event.messageId));
+            const render = questionId ? await resolveQuestionRender(questionId) : null;
+            if (questionId && render && isApproveRejectQuestion(render.options)) {
+              reactionPrompts.delete(event.messageId);
+              log.info('Reaction approval received', { questionId, decision, user: event.user?.userId });
+              await resolveQuestion(questionId, decision, event.user, event.threadId, event.messageId, render, true);
+              return;
+            }
+          }
         }
-
-        setupConfig.onAction(questionId, selectedOption, userId, {
-          instance: instanceKey,
-          messageId: event.messageId,
-          platformId: adapter.channelIdFromThreadId(event.threadId),
+        if (!event.added || event.user?.isMe) return;
+        const emoji = event.rawEmoji || event.emoji?.name;
+        if (!emoji) return;
+        const channelId = adapter.channelIdFromThreadId(event.threadId);
+        const name = event.user?.fullName ?? event.user?.userName;
+        await setupConfig.onInbound(channelId, event.threadId, {
+          id: `reaction:${event.messageId}:${event.user?.userId}:${emoji}`,
+          kind: 'chat-sdk',
+          content: {
+            text: `[Reaction ${emoji} to message ${event.messageId}]`,
+            reaction: { emoji, messageId: event.messageId },
+            author: event.user,
+            senderId: event.user?.userId,
+            sender: name,
+            senderName: name,
+          },
+          timestamp: new Date().toISOString(),
+          isMention: true,
+          isGroup: !event.thread?.isDM,
         });
       });
 
@@ -870,6 +1021,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         }
         if (content.requirePresentation) throw new Error('Approval presentation adapter is unavailable');
         const options: NormalizedOption[] = normalizeOptions(content.options as never);
+        if (config.reactionApprovals && isApproveRejectQuestion(options)) {
+          const result = await adapter.postMessage(tid, { markdown: reactionApprovalText(question) });
+          if (result?.id) {
+            reactionPrompts.set(result.id, questionId);
+            await bindPendingApprovalMessage(questionId, result.id);
+          }
+          return result?.id;
+        }
         const card = Card({
           title,
           children: [

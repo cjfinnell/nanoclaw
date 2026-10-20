@@ -391,6 +391,10 @@ export async function processQuery(
   // The subset of midTurnSent that counts as the reply: blocks to another
   // agent are left out (see answersBatch).
   let midTurnReplied = 0;
+  // Local patch: one "retrying" notice per turn on the first API retry, so a
+  // rate-limited turn does not sit silent while the SDK retries for minutes.
+  // Reset with midTurnSent at each result.
+  let retryNoticeSent = false;
   // Outbound seq high-water mark at the turn boundary — a frame-local NUMBER,
   // not a content record. Two uses: (1) the mid-turn door recognizes a block
   // that is a verbatim repeat of a message already written to outbound.db
@@ -585,6 +589,18 @@ export async function processQuery(
       handleEvent(event, routing);
       touchHeartbeat();
 
+      if (
+        event.type === 'error' &&
+        event.retryable &&
+        event.message === 'API retry' &&
+        !retryNoticeSent &&
+        sendsFailureNotice(routing)
+      ) {
+        retryNoticeSent = true;
+        log('API retry notice — delivering to channel');
+        await writeFailureNotice(routing, API_RETRY_NOTICE);
+      }
+
       if (event.type === 'init') {
         queryContinuation = event.continuation;
         // Persist immediately so a mid-turn container crash still lets the
@@ -705,6 +721,7 @@ export async function processQuery(
         // carried into the next turn — the wrap-nudge owns that case.
         midTurnSent = 0;
         midTurnReplied = 0;
+        retryNoticeSent = false;
         turnStartSeq = maxOutboundSeq();
         midTurnTail = '';
         nudgedWindow = undefined;
@@ -806,9 +823,17 @@ function sendsFailureNotice(routing: RoutingContext): boolean {
   return !routing.taskRun && !!routing.platformId && !!routing.channelType && !routing.failureNoticeWake;
 }
 
+/** Sent once per turn when the provider starts retrying (local patch). */
+export const API_RETRY_NOTICE =
+  'Claude is rate-limited or unavailable right now. Retrying; the reply will follow when a request gets through.';
+
 /** Send the dedicated provider error or a generic failure notice. */
 async function deliverErrorResult(routing: RoutingContext, text: string): Promise<void> {
   log('Error result notice — delivering to channel');
+  await writeFailureNotice(routing, text);
+}
+
+async function writeFailureNotice(routing: RoutingContext, text: string): Promise<void> {
   await writeMessageOut({
     id: generateId(),
     in_reply_to: routing.inReplyTo,
