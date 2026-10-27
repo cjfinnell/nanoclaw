@@ -17,12 +17,17 @@
 import fs from 'fs';
 import { createMatrixAdapter, type MatrixAdapterConfig } from '@beeper/chat-adapter-matrix';
 
+import path from 'path';
+
+import { DATA_DIR } from '../config.js';
 import { log } from '../log.js';
 import { readEnvFile } from '../env.js';
 import type { ChannelDefaults } from './adapter.js';
 import { createChatSdkBridge, repostUnboundReactionApprovals } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
+import { MatrixCryptoStore, type MatrixDeviceSession } from './matrix-crypto-store.js';
 import { createWhisperTranscriber } from './transcribe.js';
+import { defaultEmojiResolver } from 'chat';
 
 /**
  * Assumes a dedicated bot account on a homeserver (the common install).
@@ -86,6 +91,21 @@ function withFallbackTag<T>(message: T): T {
 }
 
 /**
+ * Matrix reactions need the emoji itself as the annotation key; the adapter
+ * sends whatever string it is given, so a name like "thumbs_up" showed as text
+ * in Beeper. Names the Chat SDK knows are resolved to the emoji; real emoji and
+ * unknown names pass through unchanged. There is no official snake_case name
+ * list (Unicode only names emoji "cat face", "cat"), so agents are told to send
+ * the emoji character itself (add_reaction in container/agent-runner).
+ */
+function matrixReactionKey(emoji: unknown): unknown {
+  if (typeof emoji !== 'string' || !/^[a-z0-9_+-]+$/i.test(emoji)) return emoji;
+  const name = emoji.toLowerCase();
+  const resolved = defaultEmojiResolver.toGChat(name);
+  return resolved !== name ? resolved : emoji;
+}
+
+/**
  * Wrap the Matrix adapter so DM conversations are identified by user handle
  * across the whole system, not by ephemeral room IDs.
  *
@@ -104,6 +124,9 @@ function withFallbackTag<T>(message: T): T {
 function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): typeof adapter {
   const origPostMessage = adapter.postMessage.bind(adapter);
   const origStartTyping = adapter.startTyping.bind(adapter);
+  const origAddReaction = adapter.addReaction.bind(adapter);
+  const origRemoveReaction = adapter.removeReaction.bind(adapter);
+  const origEditMessage = adapter.editMessage.bind(adapter);
   const origChannelIdFromThreadId = adapter.channelIdFromThreadId.bind(adapter);
 
   // roomId → user handle, used to rewrite inbound channel IDs.
@@ -233,19 +256,33 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
     return origStartTyping(resolvedTid);
   };
 
+  // Reactions and edits arrive with the same "matrix:@user:server" channel ID
+  // as posts; without resolving it the adapter reads "@user" as the room.
+  adapter.addReaction = async (threadId: string, messageId: string, emoji: Parameters<typeof origAddReaction>[2]) =>
+    origAddReaction(await resolveThreadId(threadId), messageId, matrixReactionKey(emoji) as typeof emoji);
+  adapter.removeReaction = async (
+    threadId: string,
+    messageId: string,
+    emoji: Parameters<typeof origRemoveReaction>[2],
+  ) => origRemoveReaction(await resolveThreadId(threadId), messageId, matrixReactionKey(emoji) as typeof emoji);
+  adapter.editMessage = async (threadId: string, messageId: string, message: Parameters<typeof origEditMessage>[2]) =>
+    origEditMessage(await resolveThreadId(threadId), messageId, message);
+
   return adapter;
 }
 
-/** Display name stamped on every device this adapter logs in — also how stale ones are found. */
+/** Display name stamped on the device this adapter logs in. */
 const E2EE_DEVICE_NAME = 'NanoClaw';
 
+/** Crypto store and login of the bot's one device, kept across restarts. */
+const CRYPTO_STORE_FILE = path.join(DATA_DIR, 'matrix', 'crypto-store.bin');
+
 /**
- * E2EE config for Node. The adapter's env-only path opens the crypto store in
- * IndexedDB, which Node lacks, so it throws at startup. Here the crypto store
- * is in-memory instead — meaning the Olm identity dies with the process. A
- * persisted session would bring back the old device ID under fresh keys, which
- * the homeserver rejects, so the session TTL is 1ms: every start does a
- * password login and gets a brand-new device. Needs password auth for that.
+ * E2EE config for Node. The crypto store lives in IndexedDB, which Node lacks;
+ * matrix-crypto-store.ts provides it and saves it to disk. Login starts as a
+ * password login, and the initialize wrapper below swaps in the saved access
+ * token when the snapshot is usable. The adapter's own session persistence
+ * stays off (TTL 1ms): it would reuse a token without the keys that go with it.
  */
 function buildE2eeConfig(recoveryKey: string): MatrixAdapterConfig | null {
   const { MATRIX_BASE_URL, MATRIX_USERNAME, MATRIX_PASSWORD } = process.env;
@@ -268,7 +305,7 @@ function buildE2eeConfig(recoveryKey: string): MatrixAdapterConfig | null {
     },
     userName: process.env.MATRIX_BOT_USERNAME ?? 'bot',
     recoveryKey,
-    e2ee: { useIndexedDB: false },
+    e2ee: { useIndexedDB: true },
     persistence: { session: { ttlMs: 1 } },
     inviteAutoJoin: process.env.MATRIX_INVITE_AUTOJOIN === 'true' ? { inviterAllowlist } : undefined,
     matrixSDKLogLevel: 'error',
@@ -323,19 +360,40 @@ async function finishE2eeSetup(adapter: ReturnType<typeof createMatrixAdapter>):
 }
 
 /**
- * Every start makes a new device, so log this one out on shutdown — that deletes
- * it server-side (matrix.org rejects the delete_devices API, logout works). A
- * crash skips this and leaves a stray "NanoClaw" session to remove by hand.
+ * Restore the saved device if its access token still works. A token the
+ * homeserver rejects (device signed out by hand) discards the snapshot, so the
+ * adapter logs in a new device. Any other failure keeps it: a network blip at
+ * boot must not throw away the device.
  */
-async function logoutE2eeDevice(adapter: ReturnType<typeof createMatrixAdapter>): Promise<void> {
-  const client = (adapter as any).client;
-  if (!client) return;
+async function restoreDevice(store: MatrixCryptoStore, baseURL: string): Promise<MatrixDeviceSession | null> {
+  const session = await store.restore();
+  if (!session) return null;
+  let res: Response;
   try {
-    await client.logout(true);
-    log.info('Matrix: logged out E2EE device', { deviceId: client.getDeviceId() });
+    res = await fetch(new URL('/_matrix/client/v3/account/whoami', baseURL), {
+      headers: { Authorization: `Bearer ${session.accessToken}` },
+    });
   } catch (err) {
-    log.warn('Matrix: logging out E2EE device failed', { err });
+    log.warn('Matrix: could not check saved device — reusing it', { err, deviceId: session.deviceId });
+    return session;
   }
+  if (res.status === 401) {
+    log.warn('Matrix: saved device was signed out — starting a new device', { deviceId: session.deviceId });
+    await store.discard();
+    return null;
+  }
+  if (res.ok) {
+    const whoami = (await res.json()) as { device_id?: string };
+    if (whoami.device_id !== session.deviceId) {
+      log.warn('Matrix: saved token belongs to another device — starting a new device', {
+        deviceId: session.deviceId,
+        tokenDeviceId: whoami.device_id,
+      });
+      await store.discard();
+      return null;
+    }
+  }
+  return session;
 }
 
 registerChannelAdapter('matrix', {
@@ -357,20 +415,35 @@ registerChannelAdapter('matrix', {
     if (!e2eeConfig) delete process.env.MATRIX_RECOVERY_KEY; // env path would hit the IndexedDB crash
     const matrixAdapter = wrapWithDmResolution(e2eeConfig ? createMatrixAdapter(e2eeConfig) : createMatrixAdapter());
     if (e2eeConfig) {
+      const cryptoStore = new MatrixCryptoStore(CRYPTO_STORE_FILE);
       const origInitialize = matrixAdapter.initialize.bind(matrixAdapter);
       matrixAdapter.initialize = async (chat) => {
+        const saved = await restoreDevice(cryptoStore, e2eeConfig.baseURL);
+        if (saved) {
+          (matrixAdapter as any).auth = { type: 'accessToken', accessToken: saved.accessToken, userID: saved.userId };
+        }
         await origInitialize(chat);
+        const client = (matrixAdapter as any).client;
+        cryptoStore.track({
+          userId: client.getUserId(),
+          deviceId: client.getDeviceId(),
+          accessToken: client.getAccessToken(),
+        });
+        log.info(saved ? 'Matrix: reusing saved E2EE device' : 'Matrix: logged in new E2EE device', {
+          deviceId: client.getDeviceId(),
+        });
         await finishE2eeSetup(matrixAdapter);
       };
       // Chat SDK teardown calls adapter.disconnect(), which this adapter lacks —
-      // so its shutdown() never ran. Route disconnect through it, then log out.
+      // so its shutdown() never ran. Route disconnect through it, then save the
+      // crypto store. The device stays logged in for the next start.
       (matrixAdapter as any).disconnect = async () => {
-        await logoutE2eeDevice(matrixAdapter);
         try {
           await matrixAdapter.shutdown();
         } catch (err) {
           log.warn('Matrix: adapter shutdown failed', { err });
         }
+        await cryptoStore.flush();
       };
     }
     const bridge = createChatSdkBridge({

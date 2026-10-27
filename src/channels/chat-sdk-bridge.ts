@@ -1001,7 +1001,9 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       }
 
       if (content.operation === 'reaction' && content.messageId && content.emoji) {
-        await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        // Inbound ids are namespaced "<platformId>:<agentGroupId>" by the router (messageIdForAgent).
+        const platformMessageId = (content.messageId as string).replace(/:ag-[\w-]+$/, '');
+        await adapter.addReaction(tid, platformMessageId, content.emoji as string);
         return;
       }
 
