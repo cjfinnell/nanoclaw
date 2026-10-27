@@ -283,6 +283,9 @@ const CRYPTO_STORE_FILE = path.join(DATA_DIR, 'matrix', 'crypto-store.bin');
  * password login, and the initialize wrapper below swaps in the saved access
  * token when the snapshot is usable. The adapter's own session persistence
  * stays off (TTL 1ms): it would reuse a token without the keys that go with it.
+ * Its saved /sync snapshot stays off too: a snapshot can lose a room's state,
+ * and a room loaded without m.room.encryption is never registered with the
+ * crypto, so every send fails with "Cannot encrypt event in unconfigured room".
  */
 function buildE2eeConfig(recoveryKey: string): MatrixAdapterConfig | null {
   const { MATRIX_BASE_URL, MATRIX_USERNAME, MATRIX_PASSWORD } = process.env;
@@ -306,7 +309,7 @@ function buildE2eeConfig(recoveryKey: string): MatrixAdapterConfig | null {
     userName: process.env.MATRIX_BOT_USERNAME ?? 'bot',
     recoveryKey,
     e2ee: { useIndexedDB: true },
-    persistence: { session: { ttlMs: 1 } },
+    persistence: { session: { ttlMs: 1 }, sync: { snapshotTtlMs: 1 } },
     inviteAutoJoin: process.env.MATRIX_INVITE_AUTOJOIN === 'true' ? { inviterAllowlist } : undefined,
     matrixSDKLogLevel: 'error',
   };
