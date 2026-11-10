@@ -228,6 +228,40 @@ export function attachAppContext(
  * wirings are unaffected downstream: the router strips thread ids when the
  * wiring's thread policy is off, restoring today's top-level behavior.
  */
+const MIME_TYPES_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  heic: 'image/heic',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+  zip: 'application/zip',
+};
+
+/**
+ * Guess a file's MIME type from its extension. Adapters pick the message kind
+ * from it (Matrix sends `image/*` as `m.image`, which clients render inline);
+ * without one every outbound file goes out as a generic attachment.
+ */
+export function mimeTypeForFilename(filename: string): string | undefined {
+  const dot = filename.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  return MIME_TYPES_BY_EXTENSION[filename.slice(dot + 1).toLowerCase()];
+}
+
 export function normalizeDmThreadId(threadId: string, messageId: string): string {
   if (threadId.endsWith(':') && messageId && !messageId.includes(':')) {
     return threadId + messageId;
@@ -1001,7 +1035,9 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       }
 
       if (content.operation === 'reaction' && content.messageId && content.emoji) {
-        await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        // Inbound ids are namespaced "<platformId>:<agentGroupId>" by the router (messageIdForAgent).
+        const platformMessageId = (content.messageId as string).replace(/:ag-[\w-]+$/, '');
+        await adapter.addReaction(tid, platformMessageId, content.emoji as string);
         return;
       }
 
@@ -1119,10 +1155,11 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       const rawText = (content.markdown as string) || (content.text as string);
       const text = rawText ? transformText(rawText) : rawText;
       if (text) {
-        // Attach files if present (FileUpload format: { data, filename })
+        // Attach files if present (FileUpload format: { data, filename, mimeType })
         const fileUploads = message.files?.map((f: { data: Buffer; filename: string }) => ({
           data: f.data,
           filename: f.filename,
+          mimeType: mimeTypeForFilename(f.filename),
         }));
         // Split if over the adapter's max length. Files ride on the first
         // chunk so the head of the reply still carries them.
@@ -1146,6 +1183,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         const fileUploads = message.files.map((f: { data: Buffer; filename: string }) => ({
           data: f.data,
           filename: f.filename,
+          mimeType: mimeTypeForFilename(f.filename),
         }));
         const result = await adapter.postMessage(tid, { markdown: '', files: fileUploads });
         return result?.id;

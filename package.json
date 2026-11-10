@@ -45,6 +45,7 @@
     "better-sqlite3": "13.0.3",
     "chat": "4.29.0",
     "cron-parser": "5.5.0",
+    "fake-indexeddb": "^6.2.6",
     "kleur": "^4.1.5",
     "yaml": "^2.9.0"
   },
