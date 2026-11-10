@@ -1,5 +1,5 @@
 diff --git a/dist/index.js b/dist/index.js
-index 3360d7352fec0df580a474088205519227cc8be0..2d4ddb20d17d22f6a3640942540fecc4d5dccbe6 100644
+index 3360d7352fec0df580a474088205519227cc8be0..0a05323f41f6b894444f2cfad1da19f936c6a373 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -1,5 +1,5 @@
@@ -33,7 +33,42 @@ index 3360d7352fec0df580a474088205519227cc8be0..2d4ddb20d17d22f6a3640942540fecc4
  var STORE_VERSION = 1;
  var DEFAULT_PERSIST_INTERVAL_MS = 3e4;
  function normalizeStringRecord(value) {
-@@ -2128,7 +2128,8 @@ ${codeContent}
+@@ -1984,7 +1984,7 @@ var MatrixAdapter = class {
+     if (!(node instanceof HTMLElement)) {
+       return "";
+     }
+-    const tagName = node.tagName.toLowerCase();
++    const tagName = (node.tagName ?? "").toLowerCase();
+     const children = this.renderHTMLNodesToMarkdown(node.childNodes, mentionedUserIDs);
+     switch (tagName) {
+       case "mx-reply":
+@@ -2010,7 +2010,7 @@ var MatrixAdapter = class {
+       case "s":
+         return children ? `~~${children}~~` : "";
+       case "code":
+-        return node.parentNode instanceof HTMLElement && node.parentNode.tagName.toLowerCase() === "pre" ? children : `\`${children}\``;
++        return node.parentNode instanceof HTMLElement && (node.parentNode.tagName ?? "").toLowerCase() === "pre" ? children : `\`${children}\``;
+       case "pre": {
+         const codeContent = children.replace(/\n+$/u, "");
+         return codeContent ? `
+@@ -2048,7 +2048,7 @@ ${codeContent}
+     }
+   }
+   renderListItemToMarkdown(node, mentionedUserIDs, ordinal) {
+-    if (!(node instanceof HTMLElement) || node.tagName.toLowerCase() !== "li") {
++    if (!(node instanceof HTMLElement) || (node.tagName ?? "").toLowerCase() !== "li") {
+       return "";
+     }
+     const content = this.normalizeMarkdownSpacing(
+@@ -2121,14 +2121,15 @@ ${codeContent}
+   stripReplyFallbackFromHTML(html) {
+     const root = parseHTML(html);
+     for (const child of [...root.childNodes]) {
+-      if (child instanceof HTMLElement && child.tagName.toLowerCase() === "mx-reply") {
++      if (child instanceof HTMLElement && (child.tagName ?? "").toLowerCase() === "mx-reply") {
+         child.remove();
+       }
+     }
      return root.toString();
    }
    extractAttachments(content) {
