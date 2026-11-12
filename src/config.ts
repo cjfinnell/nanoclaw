@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'NANOCLAW_EGRESS_LOCKDOWN',
   'NANOCLAW_EGRESS_NETWORK',
   'WEBHOOK_PORT',
+  'WEBHOOK_GITHUB_SECRET',
 ]);
 
 /**
@@ -115,6 +116,13 @@ export function getWebhookPort(): number {
     throw new Error(`Invalid WEBHOOK_PORT ${JSON.stringify(raw)}: expected an integer from 1 to 65535`);
   }
   return port;
+}
+
+// GitHub App webhook signing secret (webhook-router module). Empty = module
+// stays inert: /webhook/github is not registered. Resolved lazily like the
+// port so a late process override still wins.
+export function getGitHubWebhookSecret(): string {
+  return process.env.WEBHOOK_GITHUB_SECRET || envConfig.WEBHOOK_GITHUB_SECRET || '';
 }
 
 // Timezone for scheduled tasks, message formatting, etc.
