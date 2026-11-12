@@ -33,17 +33,22 @@ export async function getSubscriptionByNaturalKey(
   agentGroupId: string,
   source: string,
   subject: string,
+  eventTypesJson: string,
 ): Promise<Subscription | undefined> {
   return getDb().get<Subscription>(
-    'SELECT * FROM subscriptions WHERE agent_group_id = ? AND source = ? AND subject = ?',
+    'SELECT * FROM subscriptions WHERE agent_group_id = ? AND source = ? AND subject = ? AND event_types_json = ?',
     agentGroupId,
     source,
     subject,
+    eventTypesJson,
   );
 }
 
 export async function getSubscriptionsByAgentGroup(agentGroupId: string): Promise<Subscription[]> {
-  return getDb().all<Subscription>('SELECT * FROM subscriptions WHERE agent_group_id = ? ORDER BY created_at', agentGroupId);
+  return getDb().all<Subscription>(
+    'SELECT * FROM subscriptions WHERE agent_group_id = ? ORDER BY created_at',
+    agentGroupId,
+  );
 }
 
 export async function listSubscriptions(): Promise<Subscription[]> {
@@ -81,7 +86,10 @@ export async function deleteSubscription(id: string): Promise<void> {
 
 /** Glob → RegExp. Supports only `*` (any run) and `?` (one char); everything else is literal. */
 export function globToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
   return new RegExp(`^${escaped}$`);
 }
 
@@ -100,9 +108,7 @@ function expiresBefore(sub: Subscription, now: string): boolean {
 
 function typeMatches(subTypes: string[], type: string): boolean {
   if (subTypes.length === 0) return true;
-  return subTypes.some(
-    (t) => t === type || type.startsWith(`${t}.`),
-  );
+  return subTypes.some((t) => t === type || type.startsWith(`${t}.`));
 }
 
 /**
@@ -112,10 +118,7 @@ function typeMatches(subTypes: string[], type: string): boolean {
  */
 export async function matchSubscriptions(source: string, subject: string, type: string): Promise<Subscription[]> {
   const now = new Date().toISOString();
-  const rows = await getDb().all<Subscription>(
-    'SELECT * FROM subscriptions WHERE source = ? AND enabled = 1',
-    source,
-  );
+  const rows = await getDb().all<Subscription>('SELECT * FROM subscriptions WHERE source = ? AND enabled = 1', source);
   return rows.filter(
     (sub) =>
       !expiresBefore(sub, now) &&

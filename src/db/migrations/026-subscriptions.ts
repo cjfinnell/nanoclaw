@@ -1,5 +1,3 @@
-import type Database from 'better-sqlite3';
-
 import type { Migration } from './index.js';
 
 /**
@@ -14,13 +12,17 @@ import type { Migration } from './index.js';
  * Source-agnostic by design — see the Subscription type comment. The
  * subject is the source's generic thread key, stored as a glob so one row
  * can cover a repo and all its threads (`github:repo:owner/name*`).
+ *
+ * Identity includes event_types_json: one agent may hold layered rules on
+ * the same subject (wake on pull_request, accumulate on issue_comment) —
+ * identical (group, source, subject, filters) tuples are the same rule and
+ * collide, which the CLI turns into idempotent create.
  */
 export const migration026: Migration = {
   version: 26,
   name: 'subscriptions',
-  sqliteOnly: true,
-  up(db: Database.Database) {
-    db.exec(`
+  async up(db) {
+    await db.exec(`
       CREATE TABLE subscriptions (
         id               TEXT PRIMARY KEY,
         agent_group_id   TEXT NOT NULL REFERENCES agent_groups(id),
@@ -31,7 +33,7 @@ export const migration026: Migration = {
         enabled          INTEGER NOT NULL DEFAULT 1,
         created_at       TEXT NOT NULL,
         expires_at       TEXT,
-        UNIQUE (agent_group_id, source, subject)
+        UNIQUE (agent_group_id, source, subject, event_types_json)
       );
       CREATE INDEX idx_subscriptions_source ON subscriptions(source, enabled);
     `);
