@@ -277,3 +277,36 @@ export interface AgentMessagePolicy {
   approver: string;
   created_at: string;
 }
+
+// ── Event subscriptions (central DB) ──
+
+/**
+ * One subscription = one rule: match normalized webhook events from a source,
+ * deliver to one target agent group, with delivery semantics.
+ *
+ * Source-agnostic by contract (issue: keep every field generic so email, RSS
+ * and later sources reuse the same rows): `subject` is the source's thread
+ * key (`github:repo:owner/name`, `github:repo:owner/name#184`), stored as a
+ * glob so a repo-level row (`github:repo:owner/name*`) matches both repo
+ * events and thread events. `event_types` is a JSON array of type filters —
+ * an entry matches the event's full type (`pull_request.opened`) or its
+ * prefix family (`pull_request` = any action). Adapters, never subscriptions,
+ * hold source-specific knowledge.
+ *
+ * Self-serve: agent callers create rows scoped to their own agent group
+ * (cli scope guard); the row's agent_group_id IS the delivery target.
+ */
+export interface Subscription {
+  id: string;
+  agent_group_id: string;
+  source: string;
+  subject: string;
+  /** JSON array of type filters; empty array = all events from the source. */
+  event_types_json: string;
+  /** 1 = wake the target's session on match; 0 = accumulate as context only. */
+  wake: number;
+  enabled: number;
+  created_at: string;
+  /** ISO timestamp; NULL = never expires. */
+  expires_at: string | null;
+}
