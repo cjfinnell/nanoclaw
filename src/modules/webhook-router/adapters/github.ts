@@ -7,7 +7,8 @@
  * source-blind.
  *
  * Register at /webhook/github via registerWebhookHandler in ../index.ts.
- * Ingress: claw.cfin.dev/hooks/github → tunnel → :3000/webhook/github.
+ * Ingress: $WEBHOOK_HOST/hooks/github → tunnel → :3000/webhook/github (the
+ * public hostname is instance config in .env, never in code).
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
