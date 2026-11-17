@@ -1,0 +1,70 @@
+# Fork-only CI additions (homelab #89 phase 2, §4.1 and §4.4).
+#
+# Upstream's ci.yml already covers install, format, typecheck and tests on
+# every PR and push to main, with its `gate` aggregate job meant to be a
+# required check. This file adds the two things the fork needs on top and
+# must stay a SEPARATE file: editing upstream workflows from the fork would
+# turn every upstream sync PR into a conflict.
+#
+# GitHub-hosted runners only — this repo is public and #87's self-hosted
+# runners must never be attached to it (§4.4). No secrets are used or needed.
+name: fork-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: fork / gitleaks
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # Full history: the fork's record is append-only, so old commits
+          # are the ones most worth scanning too.
+          fetch-depth: 0
+      - name: gitleaks (defaults + fork fingerprint rules)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .github/gitleaks.toml
+
+  build:
+    name: fork / build
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Emitting build output, not just --noEmit: the deployer's validate
+      # phase runs the same build, so CI should prove it emits cleanly.
+      - run: pnpm run build
+
+  # Aggregate, same idiom as upstream's `gate` job: the required check this
+  # file contributes is `fork-gate`, and it is red if either input is red,
+  # skipped, or cancelled (skipped must count as failed for a required check).
+  fork-gate:
+    name: fork-gate
+    if: always()
+    needs: [gitleaks, build]
+    permissions: {}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: every needed job succeeded
+        run: |
+          test "${{ needs.gitleaks.result }}" = success
+          test "${{ needs.build.result }}" = success

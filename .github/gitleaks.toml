@@ -1,0 +1,55 @@
+# Fork leak rules (homelab #89 phase 2, §4.1). Used by fork-ci.yml only;
+# upstream has no gitleaks config of its own, so this file is fork-only and
+# never conflicts with an upstream sync.
+#
+# Extends gitleaks' default secret detection with three "fingerprint" rules:
+# values that are not credentials, but that reveal this specific install
+# (hostnames, private addresses, agent group ids). Convention: instance
+# values belong in .env or gitignored config, never in code.
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Fork rules
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "fork-hostname"
+description = "cfin.dev hostname — instance fingerprint, belongs in .env"
+regex = '''(?i)\b(?:[a-z0-9-]+\.)+cfin\.dev\b'''
+tags = ["hostnames", "fingerprint"]
+
+[[rules]]
+id = "fork-rfc1918"
+description = "RFC1918 address — private network detail, belongs in .env"
+regex = '''\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b'''
+tags = ["network", "fingerprint"]
+
+[[rules]]
+id = "fork-agent-group-id"
+description = "NanoClaw agent group id — live install identifier"
+regex = '''\bag-\d{13}-[a-z0-9]{6}\b'''
+tags = ["identifier", "fingerprint"]
+
+# ---------------------------------------------------------------------------
+# Allowlist — upstream generic constants and documentation examples.
+# Everything here comes from upstream skills (iron-proxy conformance
+# fixtures, onecli docker-bridge defaults, add-rtk/dial doc examples) and is
+# the same in every install, so it says nothing about this one. When an
+# upstream sync introduces a NEW example value, the check goes red on purpose:
+# extend this list in that sync PR after confirming the value is generic.
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "upstream example values that are not this install's data"
+regexes = [
+  # Docker bridge defaults, used throughout upstream skill tests and docs.
+  '''172\.17\.0\.1''',
+  '''172\.18\.0\.1''',
+  # Upstream fixture CIDRs and example hosts (iron-proxy conformance, docs).
+  '''10\.0\.0\.0/8''',
+  '''10\.1\.2\.3''',
+  '''10\.0\.0\.5''',
+  # Upstream doc examples for agent group ids (add-rtk SKILL.md, dial fixtures).
+  '''ag-1776342942165-ptgddd''',
+  '''ag-1787000000000-aaaaaa''',
+]
