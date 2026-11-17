@@ -419,6 +419,20 @@ describe('lifecycle', () => {
     expect(cli.started.at(-1)!.proc.killed).toBe(true);
   });
 
+  it('treats "removal already in progress" from rm --force as a successful stop', async () => {
+    const handle = await driver().prepare(fixtureSpec());
+    await handle.start();
+    cli.responses = [
+      {
+        match: /^rm --force ncl-spike-s1$/,
+        throws: new Error('Error response from daemon: removal of container ncl-spike-s1 is already in progress'),
+      },
+      { match: /^ps -a /, output: 'ncl-spike-s1\n' },
+    ];
+
+    await expect(handle.stop('sweep-kill')).resolves.toBeUndefined();
+  });
+
   it('start is idempotent', async () => {
     const handle = await driver().prepare(fixtureSpec());
     await handle.start();
