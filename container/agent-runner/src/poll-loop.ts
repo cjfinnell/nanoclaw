@@ -817,10 +817,17 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
 /**
  * Does a failure on this route get a notice? Task runs report through their
  * run log. A turn woken only by failure notices sends none, so an a2a or
- * self-addressed failure chain stops after one notice.
+ * self-addressed failure chain stops after one notice. Webhook routes have
+ * no messaging group behind them, so a notice would fail delivery (local patch).
  */
 function sendsFailureNotice(routing: RoutingContext): boolean {
-  return !routing.taskRun && !!routing.platformId && !!routing.channelType && !routing.failureNoticeWake;
+  return (
+    !routing.taskRun &&
+    !!routing.platformId &&
+    !!routing.channelType &&
+    routing.channelType !== 'webhook' &&
+    !routing.failureNoticeWake
+  );
 }
 
 /** Sent once per turn when the provider starts retrying (local patch). */
