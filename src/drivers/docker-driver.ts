@@ -613,6 +613,11 @@ class DockerHandle implements SessionHandle {
 
   /** A successful daemon query distinguishes auto-removal from a daemon outage. */
   #confirmRemoved(name: string, error: unknown): void {
+    // `docker rm --force` on an auto-removing (--rm) container that is already
+    // being removed fails with "removal of container X is already in progress",
+    // and `ps -a` still lists it for a moment. That is success, not a failure.
+    if (/removal of container .* is already in progress/i.test(error instanceof Error ? error.message : String(error)))
+      return;
     try {
       const remaining = this.cli.run(['ps', '-a', '--filter', `name=^/${name}$`, '--format', '{{.Names}}']);
       if (!remaining.trim()) return;
