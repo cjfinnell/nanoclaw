@@ -14,8 +14,7 @@ const TITLE_MAX = 200;
 
 function titleFrom(payload: Record<string, unknown>): string | undefined {
   const container = (payload.issue ?? payload.pull_request ?? payload.discussion) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const t = container?.title ?? (payload as { title?: unknown }).title;
   if (typeof t !== 'string' || t.length === 0) return undefined;
   return t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX)}…` : t;
@@ -23,8 +22,7 @@ function titleFrom(payload: Record<string, unknown>): string | undefined {
 
 function urlFrom(payload: Record<string, unknown>): string | undefined {
   const container = (payload.issue ?? payload.pull_request ?? payload.discussion) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const u = container?.html_url ?? (payload as { html_url?: unknown }).html_url;
   return typeof u === 'string' && u.length > 0 ? u : undefined;
 }
