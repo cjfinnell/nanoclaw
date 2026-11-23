@@ -28,6 +28,9 @@ permissions:
 
 jobs:
   verify:
+    # Fork: needs upstream's ECR pull role (OIDC), which a fork cannot assume.
+    # The fork builds its own agent image on the VM and never pulls this one.
+    if: github.repository == 'nanocoai/nanoclaw'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
