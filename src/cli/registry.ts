@@ -23,6 +23,7 @@ export const GROUP_SCOPE_RESOURCES = new Set([
   'destinations',
   'members',
   'tasks',
+  'templates',
   'subscriptions',
 ]);
 
