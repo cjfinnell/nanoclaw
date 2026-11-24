@@ -18,6 +18,7 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_BASE,
   CONTAINER_MEMORY_LIMIT,
+  CONTAINER_MEMORY_LIMIT_OVERRIDES,
   CONTAINER_PIDS_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
@@ -1508,7 +1509,7 @@ export function composeSessionSpec(input: ComposeSessionSpecInput): SessionSpec 
     hardening: 'standard',
     resources: {
       cpus: CONTAINER_CPU_LIMIT || undefined,
-      memoryMb: parseMemoryMb(CONTAINER_MEMORY_LIMIT),
+      memoryMb: parseMemoryMb(CONTAINER_MEMORY_LIMIT_OVERRIDES[agentGroup.folder] ?? CONTAINER_MEMORY_LIMIT),
       pidsLimit: parsePidsLimit(CONTAINER_PIDS_LIMIT),
       shmSizeMb: SHM_SIZE_MB,
     },
