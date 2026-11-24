@@ -125,6 +125,31 @@ COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
 
+# ---- Rust toolchain ----------------------------------------------------------
+# Local patch (2026-11-24, admin ticket "Add a Rust toolchain to the shared agent
+# base image"): agents write new code in Rust. rustup and the toolchain are
+# installed system-wide under /usr/local (read-only for the node user); cargo's
+# registry and git cache go to the node user's home at runtime (CARGO_HOME).
+# clang + mold + pkg-config + build-essential cover native linking and -sys
+# crates. Pin RUST_TOOLCHAIN to a version to stop `stable` drifting on rebuilds.
+ARG RUST_TOOLCHAIN=stable
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        mold \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup
+RUN curl -fsSL https://sh.rustup.rs | \
+        CARGO_HOME=/usr/local/cargo sh -s -- -y --profile minimal \
+            --default-toolchain "${RUST_TOOLCHAIN}" --component clippy --component rustfmt \
+            --no-modify-path && \
+    chmod -R a+rX /usr/local/rustup /usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:$PATH"
+ENV CARGO_HOME=/home/node/.cargo
+
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
