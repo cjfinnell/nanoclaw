@@ -16,6 +16,7 @@ const envConfig = readEnvFile([
   'NANOCLAW_FAST_MODE',
   'CONTAINER_CPU_LIMIT',
   'CONTAINER_MEMORY_LIMIT',
+  'CONTAINER_MEMORY_LIMIT_OVERRIDES',
   'CONTAINER_PIDS_LIMIT',
   'NANOCLAW_EGRESS_LOCKDOWN',
   'NANOCLAW_EGRESS_NETWORK',
@@ -98,6 +99,16 @@ export const CONTAINER_INSTALL_LABEL = `nanoclaw-install=${INSTALL_SLUG}`;
 // Operators opt in: CONTAINER_CPU_LIMIT=2, CONTAINER_MEMORY_LIMIT=8g.
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || envConfig.CONTAINER_CPU_LIMIT || '';
 export const CONTAINER_MEMORY_LIMIT = process.env.CONTAINER_MEMORY_LIMIT || envConfig.CONTAINER_MEMORY_LIMIT || '';
+// Local patch: per-group memory caps, "folder=size,folder=size" (e.g. gamedev=6g).
+// A group not listed uses CONTAINER_MEMORY_LIMIT.
+const memoryOverridesRaw =
+  process.env.CONTAINER_MEMORY_LIMIT_OVERRIDES || envConfig.CONTAINER_MEMORY_LIMIT_OVERRIDES || '';
+export const CONTAINER_MEMORY_LIMIT_OVERRIDES: Record<string, string> = Object.fromEntries(
+  memoryOverridesRaw
+    .split(',')
+    .map((pair) => pair.split('=').map((x) => x.trim()))
+    .filter((kv) => kv.length === 2 && kv[0] && kv[1]),
+);
 
 // Fork-bomb backstop. cgroups v2 counts THREADS, not processes, and Chromium is
 // thread-hungry — a browsing agent with several tabs open runs into the high
